@@ -1,5 +1,16 @@
 # java-code-format
 
+## Enhance 
+
+### format the java file/dir
+
+```java
+List<String> formatSourceFile(String file, boolean useExecutor, ExecutorService executorService,
+                                       boolean reWrite, long timeout, TimeUnit unit, boolean timeoutForAll);
+```
+
+you can choose using a ExecutorService to formatted the source file now.
+
 ## Using the formatter
 
 ### from the command-line
