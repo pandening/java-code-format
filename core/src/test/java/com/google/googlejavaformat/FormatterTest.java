@@ -10,13 +10,6 @@ import java.util.Objects;
 public class FormatterTest {
 
     public static void main(String[] args) {
-        String a = new String("a");
-        String b = new String("a");
-
-        Integer ia = 1;
-        Integer ib = 1;
-
-        System.out.println(Objects.equals(ia, ib));
 
     }
 

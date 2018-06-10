@@ -1,9 +1,4 @@
-# google-java-format
-
-`google-java-format` is a program that reformats Java source code to comply with
-[Google Java Style][].
-
-[Google Java Style]: https://google.github.io/styleguide/javaguide.html
+# java-code-format
 
 ## Using the formatter
 
@@ -76,32 +71,9 @@ Implementation`.
 *   [maltzj/google-style-precommit-hook](https://github.com/maltzj/google-style-precommit-hook):
     A pre-commit (pre-commit.com) hook that will automatically run GJF whenever
     you commit code to your repository
+    
 
-### as a library
-
-The formatter can be used in software which generates java to output more
-legible java code. Just include the library in your maven/gradle/etc.
-configuration.
-
-#### Maven
-
-```xml
-<dependency>
-  <groupId>com.google.googlejavaformat</groupId>
-  <artifactId>google-java-format</artifactId>
-  <version>1.6</version>
-</dependency>
-```
-
-#### Gradle
-
-```groovy
-dependencies {
-  compile 'com.google.googlejavaformat:google-java-format:1.6'
-}
-```
-
-You can then use the formatter through the `formatSource` methods. E.g.
+### Usage    
 
 ```java
 String formattedSource = new Formatter().formatSource(sourceString);
@@ -123,10 +95,6 @@ Your starting point should be the instance methods of
 ```
 mvn install
 ```
-
-## Contributing
-
-Please see [the contributors guide](CONTRIBUTING.md) for details.
 
 ## License
 
