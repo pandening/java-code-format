@@ -236,8 +236,8 @@ public final class Formatter {
    * @param timeoutForAll if true, total timeout is {@code timeout}, else timeout is {@code timeout * fileCount}
    * @return the formatted java source
    */
-  public List<String> formatSourceFile(String file, boolean useExecutor, boolean reWrite,
-                                       long timeout, TimeUnit unit, boolean timeoutForAll)
+  public List<String> formatSourceFile(String file, boolean useExecutor, ExecutorService executorService,
+                                       boolean reWrite, long timeout, TimeUnit unit, boolean timeoutForAll)
           throws IOException, FormatterException {
     if (Strings.isNullOrEmpty(file)) {
       return Collections.emptyList();
@@ -247,6 +247,9 @@ public final class Formatter {
       timeout = 1;
       unit = TimeUnit.SECONDS;
       timeoutForAll = false;
+    }
+    if (executorService == null) {
+      executorService = EXECUTOR_SERVICE;
     }
     File sourceFile = new File(file);
     if (sourceFile.isFile()) {
@@ -262,7 +265,7 @@ public final class Formatter {
             formatted = "";
           }
           return ImmutableList.of(formatted); // do not update the file source.
-        }, EXECUTOR_SERVICE);
+        }, executorService);
         try {
           if (formattedFuture.get(timeout, unit) == null) {
             return Collections.emptyList();
@@ -298,7 +301,7 @@ public final class Formatter {
               formatted = "";
             }
             return formatted;
-          }, EXECUTOR_SERVICE));
+          }, executorService));
         }
         // check the status.
         CompletableFuture<List<String>> formattedResultFuture =
