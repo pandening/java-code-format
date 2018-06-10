@@ -16,9 +16,11 @@ package com.google.googlejavaformat.java;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Range;
 import com.google.common.collect.RangeSet;
 import com.google.common.collect.TreeRangeSet;
@@ -31,12 +33,28 @@ import com.google.googlejavaformat.FormattingError;
 import com.google.googlejavaformat.Newlines;
 import com.google.googlejavaformat.Op;
 import com.google.googlejavaformat.OpsBuilder;
+
+import java.io.File;
 import java.io.IOError;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
+
 import org.openjdk.javax.tools.Diagnostic;
 import org.openjdk.javax.tools.DiagnosticCollector;
 import org.openjdk.javax.tools.DiagnosticListener;
@@ -86,6 +104,13 @@ import org.openjdk.tools.javac.util.Options;
  */
 @Immutable
 public final class Formatter {
+  static final ExecutorService EXECUTOR_SERVICE = new ThreadPoolExecutor(
+          Runtime.getRuntime().availableProcessors(),
+          Math.min(Runtime.getRuntime().availableProcessors() * 2, 50),
+          60,
+          TimeUnit.SECONDS,
+          new LinkedBlockingQueue<>()
+          );
 
   static final Range<Integer> EMPTY_RANGE = Range.closedOpen(-1, -1);
 
@@ -187,6 +212,134 @@ public final class Formatter {
     // TODO(cushon): proper support for streaming input/output. Input may
     // not be feasible (parsing) but output should be easier.
     output.write(formatSource(input.read()));
+  }
+
+  /**
+   * Format an input file (or dir), this method will judge the input {@code file}, if it is
+   * A directory, then this method will scan the directory to find all of the java source files.
+   * Then format every java file. if the {@code useExecutor} is true, then this method will use
+   * The ExecuteService {@link Formatter#EXECUTOR_SERVICE} to submit a {@link FormatFileCallable}.
+   * You should check the result list's element. if the element is empty, you should do not overwrite
+   * it to source file path.
+   *
+   * @param file the input
+   * @param useExecutor whether multi-thread mode
+   * @return the formatted java source
+   */
+  public List<String> formatSourceFile(String file, boolean useExecutor)
+          throws IOException, FormatterException {
+    if (Strings.isNullOrEmpty(file)) {
+      return Collections.emptyList();
+    }
+    File sourceFile = new File(file);
+    if (sourceFile.isFile()) {
+      // this is a file
+      if (useExecutor) {
+        CompletableFuture<List<String>> formattedFuture = CompletableFuture.supplyAsync(()->{
+          Path path = Paths.get(file);
+          String formatted;
+          try {
+            formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
+          } catch (FormatterException | IOException e) {
+            formatted = "";
+          }
+          return ImmutableList.of(formatted); // do not update the file source.
+        }, EXECUTOR_SERVICE);
+        try {
+          if (formattedFuture.get(1, TimeUnit.SECONDS) == null) {
+            return Collections.emptyList();
+          } else {
+            return formattedFuture.getNow(Collections.emptyList());
+          }
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+          return Collections.emptyList();
+        }
+      } else {
+        Path path = Paths.get(file);
+        String formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
+        return ImmutableList.of(formatted); // do not update the file source.
+      }
+    } else if (sourceFile.isDirectory()) {
+      // this is a directory
+      List<String> filePathLit = Lists.newArrayList();
+      scanDirectory(file, filePathLit);
+      if (filePathLit.isEmpty()) {
+        return Collections.emptyList();
+      }
+      if (useExecutor) {
+        List<CompletableFuture<String>> formattedFutureList = Lists.newArrayList();
+        for (String p : filePathLit) {
+          formattedFutureList.add(CompletableFuture.supplyAsync(() -> {
+            Path path = Paths.get(p);
+            String formatted;
+            try {
+              formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
+            } catch (FormatterException | IOException e) {
+              formatted = "";
+            }
+            return formatted;
+          }, EXECUTOR_SERVICE));
+        }
+        // check the status.
+        CompletableFuture<List<String>> formattedResultFuture =
+                CompletableFuture
+                .allOf(formattedFutureList.toArray(new CompletableFuture[formattedFutureList.size()]))
+                .thenApply(formattedFuture -> formattedFutureList
+                        .stream()
+                        .map(CompletableFuture::join)
+                        .collect(Collectors.toList()));
+        try {
+          if (formattedResultFuture.get(formattedFutureList.size(), TimeUnit.SECONDS) == null) {
+            return Collections.emptyList();
+          } else {
+            return formattedResultFuture.getNow(Collections.emptyList());
+          }
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+          return Collections.emptyList();
+        }
+      } else {
+        List<String> formattedList = Lists.newArrayList();
+        for (String p : filePathLit) {
+          Path path = Paths.get(p);
+          String formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
+          formattedList.add(formatted);
+        }
+        return formattedList;
+      }
+    } else {
+      // doNothing.
+      return Collections.emptyList();
+    }
+  }
+
+  /**
+   *  Scan the directory {@code directory} to find all of the java files.
+   *
+   * @param directory the scan directory
+   * @param filePathList the result.
+   */
+  private void scanDirectory(String directory, List<String> filePathList) {
+    if (Strings.isNullOrEmpty(directory)) {
+      return;
+    }
+    File sourceFile = new File(directory);
+    if (sourceFile.isFile()) {
+      // this is a file
+      filePathList.add(directory);
+      return;
+    }
+    // this is a directory.
+    File[] fileList = sourceFile.listFiles();
+    if (fileList == null) {
+      return; // no file
+    }
+    for (File file : fileList) {
+      if (file.isFile()) {
+        filePathList.add(file.getAbsolutePath());
+      } else if (file.isDirectory()) {
+        scanDirectory(directory, filePathList);
+      }
+    }
   }
 
   /**
