@@ -14,8 +14,6 @@
 
 package com.google.googlejavaformat.java;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -33,28 +31,6 @@ import com.google.googlejavaformat.FormattingError;
 import com.google.googlejavaformat.Newlines;
 import com.google.googlejavaformat.Op;
 import com.google.googlejavaformat.OpsBuilder;
-
-import java.io.File;
-import java.io.IOError;
-import java.io.IOException;
-import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.stream.Collectors;
-
 import org.openjdk.javax.tools.Diagnostic;
 import org.openjdk.javax.tools.DiagnosticCollector;
 import org.openjdk.javax.tools.DiagnosticListener;
@@ -69,6 +45,30 @@ import org.openjdk.tools.javac.tree.JCTree.JCCompilationUnit;
 import org.openjdk.tools.javac.util.Context;
 import org.openjdk.tools.javac.util.Log;
 import org.openjdk.tools.javac.util.Options;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOError;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * This is google-java-format, a new Java formatter that follows the Google Java Style Guide quite
@@ -104,7 +104,12 @@ import org.openjdk.tools.javac.util.Options;
  */
 @Immutable
 public final class Formatter {
-  static final ExecutorService EXECUTOR_SERVICE = new ThreadPoolExecutor(
+  /**
+   * This ExecutorService will be used at method {@link Formatter#formatSourceFile(String, boolean, boolean, long, TimeUnit, boolean)}
+   * if the method's param {@code useExecutor} is true, then the formatter will submit the task to this Executor.
+   * and the default timeout is 1 sec for each file.
+   * */
+  private static final ExecutorService EXECUTOR_SERVICE = new ThreadPoolExecutor(
           Runtime.getRuntime().availableProcessors(),
           Math.min(Runtime.getRuntime().availableProcessors() * 2, 50),
           60,
@@ -221,32 +226,45 @@ public final class Formatter {
    * The ExecuteService {@link Formatter#EXECUTOR_SERVICE} to submit a {@link FormatFileCallable}.
    * You should check the result list's element. if the element is empty, you should do not overwrite
    * it to source file path.
+   * if you want to replace the old source by the formatted source, let the param {@code reWrite} as true
    *
+   * @param reWrite  whether to reWrite the source file.
    * @param file the input
    * @param useExecutor whether multi-thread mode
+   * @param timeout the timeout value, for each java file.
+   * @param unit the time unit
+   * @param timeoutForAll if true, total timeout is {@code timeout}, else timeout is {@code timeout * fileCount}
    * @return the formatted java source
    */
-  public List<String> formatSourceFile(String file, boolean useExecutor)
+  public List<String> formatSourceFile(String file, boolean useExecutor, boolean reWrite,
+                                       long timeout, TimeUnit unit, boolean timeoutForAll)
           throws IOException, FormatterException {
     if (Strings.isNullOrEmpty(file)) {
       return Collections.emptyList();
+    }
+    // re-set the timeout value.
+    if (timeout <= 0) {
+      timeout = 1;
+      unit = TimeUnit.SECONDS;
+      timeoutForAll = false;
     }
     File sourceFile = new File(file);
     if (sourceFile.isFile()) {
       // this is a file
       if (useExecutor) {
-        CompletableFuture<List<String>> formattedFuture = CompletableFuture.supplyAsync(()->{
+        CompletableFuture<List<String>> formattedFuture = CompletableFuture.supplyAsync(() -> {
           Path path = Paths.get(file);
           String formatted;
           try {
             formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
+            writeFile(file, formatted, reWrite);
           } catch (FormatterException | IOException e) {
             formatted = "";
           }
           return ImmutableList.of(formatted); // do not update the file source.
         }, EXECUTOR_SERVICE);
         try {
-          if (formattedFuture.get(1, TimeUnit.SECONDS) == null) {
+          if (formattedFuture.get(timeout, unit) == null) {
             return Collections.emptyList();
           } else {
             return formattedFuture.getNow(Collections.emptyList());
@@ -257,12 +275,13 @@ public final class Formatter {
       } else {
         Path path = Paths.get(file);
         String formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
+        writeFile(file, formatted, reWrite);
         return ImmutableList.of(formatted); // do not update the file source.
       }
     } else if (sourceFile.isDirectory()) {
       // this is a directory
       List<String> filePathLit = Lists.newArrayList();
-      scanDirectory(file, filePathLit);
+      scanJavaFileInDirectory(file, filePathLit);
       if (filePathLit.isEmpty()) {
         return Collections.emptyList();
       }
@@ -274,6 +293,7 @@ public final class Formatter {
             String formatted;
             try {
               formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
+              writeFile(p, formatted, reWrite);
             } catch (FormatterException | IOException e) {
               formatted = "";
             }
@@ -284,12 +304,14 @@ public final class Formatter {
         CompletableFuture<List<String>> formattedResultFuture =
                 CompletableFuture
                 .allOf(formattedFutureList.toArray(new CompletableFuture[formattedFutureList.size()]))
-                .thenApply(formattedFuture -> formattedFutureList
-                        .stream()
-                        .map(CompletableFuture::join)
-                        .collect(Collectors.toList()));
+                .thenApply(formattedFuture ->
+                        formattedFutureList.stream().map(CompletableFuture::join).collect(Collectors.toList()));
         try {
-          if (formattedResultFuture.get(formattedFutureList.size(), TimeUnit.SECONDS) == null) {
+          long timeOutValue = timeout;
+          if (!timeoutForAll) {
+            timeOutValue = formattedFutureList.size() * timeout;
+          }
+          if (formattedResultFuture.get(timeOutValue, unit) == null) {
             return Collections.emptyList();
           } else {
             return formattedResultFuture.getNow(Collections.emptyList());
@@ -303,6 +325,7 @@ public final class Formatter {
           Path path = Paths.get(p);
           String formatted = formatSource(new String(Files.readAllBytes(path), UTF_8));
           formattedList.add(formatted);
+          writeFile(p, formatted, reWrite);
         }
         return formattedList;
       }
@@ -313,12 +336,31 @@ public final class Formatter {
   }
 
   /**
+   *  Re-write file with the new content.
+   *
+   * @param filePath the file path
+   * @param content the new content
+   * @param reWrite whether to re-write
+   * @throws FileNotFoundException Not Find
+   */
+  private void writeFile(String filePath, String content, boolean reWrite)
+          throws FileNotFoundException {
+    if (!Strings.isNullOrEmpty(content) && reWrite) {
+      // re-write the formatted source.
+      PrintWriter printWriter = new PrintWriter(new File(filePath));
+      printWriter.print(content);
+      printWriter.flush();
+      printWriter.close();
+    }
+  }
+
+  /**
    *  Scan the directory {@code directory} to find all of the java files.
    *
    * @param directory the scan directory
    * @param filePathList the result.
    */
-  private void scanDirectory(String directory, List<String> filePathList) {
+  private void scanJavaFileInDirectory(String directory, List<String> filePathList) {
     if (Strings.isNullOrEmpty(directory)) {
       return;
     }
@@ -334,10 +376,10 @@ public final class Formatter {
       return; // no file
     }
     for (File file : fileList) {
-      if (file.isFile()) {
+      if (file.isFile() && file.getAbsolutePath().endsWith(".java")) {
         filePathList.add(file.getAbsolutePath());
       } else if (file.isDirectory()) {
-        scanDirectory(directory, filePathList);
+        scanJavaFileInDirectory(file.getAbsolutePath(), filePathList);
       }
     }
   }
