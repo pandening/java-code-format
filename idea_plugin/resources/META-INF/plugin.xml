@@ -1,0 +1,37 @@
+<idea-plugin url="https://github.com/google/google-java-format/tree/master/idea_plugin">
+  <id>google-java-format</id>
+  <name>google-java-format</name>
+  <version>1.4.0.172</version>
+  <vendor url="https://github.com/google/google-java-format">
+    Google
+  </vendor>
+
+  <!-- Mark it as available on all JetBrains IDEs. It's really only useful in
+       IDEA and Android Studio, but there's no way to specify that for some
+       reason. It won't crash PyCharm or anything, so whatever. -->
+  <depends>com.intellij.modules.lang</depends>
+
+  <description><![CDATA[
+      Formats Java source code to comply with Google Style. This version of the plugin uses
+      google-java-format 1.4.
+    ]]></description>
+
+  <idea-version since-build="172"/>
+
+  <project-components>
+    <component>
+      <implementation-class>
+        com.google.googlejavaformat.intellij.GoogleJavaFormatInstaller
+      </implementation-class>
+      <loadForDefaultProject/>
+    </component>
+  </project-components>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <projectConfigurable instance="com.google.googlejavaformat.intellij.GoogleJavaFormatConfigurable"
+                         id="google-java-format.settings"
+                         displayName="google-java-format Settings"/>
+    <projectService serviceImplementation="com.google.googlejavaformat.intellij.GoogleJavaFormatSettings"/>
+  </extensions>
+
+</idea-plugin>
